@@ -2,10 +2,8 @@ import { PublicRoomState } from '../sockets/types';
 
 export const rooms = new Map<string, RoomStateInternal>();
 
-type RoomStatus = PublicRoomState['status'];
-
-interface RoomStateInternal extends PublicRoomState {
-  // server-only fields can go here later (e.g., currentWord)
+export interface RoomStateInternal extends PublicRoomState {
+  currentWord?: string;       // server-only
 }
 
 export function createRoom(id: string, hostId: string, hostName: string): RoomStateInternal {
@@ -17,6 +15,9 @@ export function createRoom(id: string, hostId: string, hostName: string): RoomSt
     round: 0,
     maxRounds: 3,
     turn: -1,
+    drawingPlayerId: undefined,
+    revealedHint: '',
+    turnEndsAt: undefined,
   };
   rooms.set(id, state);
   return state;
@@ -32,7 +33,6 @@ export function leaveRoom(room: RoomStateInternal, playerId: string) {
 }
 
 export function publicRoomState(room: RoomStateInternal): PublicRoomState {
-  // right now no secret fields; later we'll strip currentWord
-  const { ...pub } = room;
+  const { currentWord, ...pub } = room;
   return pub;
 }
