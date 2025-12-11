@@ -1,56 +1,84 @@
-import { pickWord, maskWord } from './words';
-import { scoreForGuess, drawerBonus } from '../util/scoring';
-import type { RoomStateInternal } from './state';
+import { Player } from "../sockets/types";
 
-const TURN_MS = 75_000;
-const HINT_STAGES_MS = [25_000, 50_000];
+/**
+ * Game engine: handles word selection, hint reveal, scoring, turn rotation.
+ * We auto-assign a word at each turn so the drawer always knows the word.
+ */
 
-export function startGame(room: RoomStateInternal) {
-  room.status = 'in-progress';
+const WORDS = [
+  "apple","banana","cat","dog","sun","moon","car","house","tree",
+  "flower","pencil","phone","rocket","pizza","chair","cloud"
+];
+
+export function startGame(room: any) {
+  room.status = "in-progress";
   room.round = 1;
-  room.turn = -1;
+  room.turn = 1;
+  room.maxRounds = 3;
+  room.currentWord = null;
+  room.revealedHint = null;
+  // Note: nextTurn() will assign the first word & timer
 }
 
-export function nextTurn(room: RoomStateInternal) {
-  if (room.players.length === 0) return;
-  room.turn = (room.turn + 1) % room.players.length;
+export function nextTurn(room: any) {
+  const idx = room.players.findIndex((p: Player) => p.id === room.drawingPlayerId);
 
-  if (room.turn === 0 && room.round > 0) {
-    if (room.round >= room.maxRounds) {
-      room.status = 'finished';
-      room.turnEndsAt = undefined;
-      room.drawingPlayerId = undefined;
-      room.revealedHint = undefined;
-      return;
-    }
-    room.round += 1;
+  // pick next drawer (wrap)
+  if (idx === -1) {
+    room.drawingPlayerId = room.players[0]?.id;
+  } else {
+    room.drawingPlayerId = room.players[(idx + 1) % room.players.length].id;
   }
 
-  const drawer = room.players[room.turn];
-  const word = pickWord();
-  room.currentWord = word;
-  room.drawingPlayerId = drawer.id;
-  room.players.forEach(p => (p.hasGuessed = false));
-  room.revealedHint = maskWord(word, 0);
-  room.turnEndsAt = Date.now() + TURN_MS;
+  // reset per-player turn flags
+  room.players.forEach((p: Player) => (p.hasGuessed = false));
+
+  // increment round if drawer wrapped to first player
+  if (idx !== -1 && (idx + 1) % room.players.length === 0) {
+    room.round = (room.round || 1) + 1;
+  }
+
+  // check finished
+  if (room.round && room.round > room.maxRounds) {
+    room.status = "finished";
+    room.currentWord = null;
+    room.revealedHint = null;
+    room.turnEndsAt = undefined;
+    return;
+  }
+
+  // --- AUTO-ASSIGN A WORD FOR THIS TURN ---
+  const selected = WORDS[Math.floor(Math.random() * WORDS.length)];
+  room.currentWord = selected;
+  // revealedHint uses spaces between letters for readability (matching client)
+  room.revealedHint = selected.split("").map(() => "_").join(" ");
+
+  // start turn timer (e.g., 60s)
+  room.turnEndsAt = Date.now() + 60_000;
 }
 
-export function revealHint(room: RoomStateInternal) {
-  if (!room.currentWord || !room.turnEndsAt) return;
-  const elapsed = TURN_MS - Math.max(room.turnEndsAt - Date.now(), 0);
-  const level = elapsed >= HINT_STAGES_MS[1] ? 2 : elapsed >= HINT_STAGES_MS[0] ? 1 : 0;
-  room.revealedHint = maskWord(room.currentWord, level);
+export function revealHint(room: any) {
+  if (!room.currentWord || !room.revealedHint) return;
+
+  const letters = room.currentWord.split("");
+  const hintArr = room.revealedHint.split(" ");
+
+  // reveal random unrevealed letters slowly (probability)
+  for (let i = 0; i < letters.length; i++) {
+    if (hintArr[i] === "_" && Math.random() < 0.08) {
+      hintArr[i] = letters[i];
+    }
+  }
+
+  room.revealedHint = hintArr.join(" ");
 }
 
-export function handleCorrectGuess(room: RoomStateInternal, playerId: string) {
-  const player = room.players.find(p => p.id === playerId);
+export function handleCorrectGuess(room: any, playerId: string) {
+  const player = room.players.find((p: Player) => p.id === playerId);
   if (!player || player.hasGuessed) return { gained: 0 };
-  player.hasGuessed = true;
-  const remainingMs = Math.max((room.turnEndsAt ?? 0) - Date.now(), 0);
-  const gained = scoreForGuess(remainingMs);
-  player.score += gained;
 
-  const drawer = room.players[room.turn];
-  if (drawer) drawer.score += drawerBonus(gained);
-  return { gained };
+  player.hasGuessed = true;
+  player.score = (player.score || 0) + 100;
+
+  return { gained: 100 };
 }

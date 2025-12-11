@@ -1,155 +1,218 @@
-import http from 'http';
-import express from 'express';
-import cors from 'cors';
-import { Server } from 'socket.io';
-import { v4 as uuid } from 'uuid';
-import { ClientToServer, ServerToClient, DrawEvent } from './sockets/types';
-import { rooms, createRoom, joinRoom, leaveRoom, publicRoomState } from './game/state';
-import { sanitizeChat, isCheat } from './util/guard';
-import { startGame, nextTurn, revealHint, handleCorrectGuess } from './game/engine';
+import http from "http";
+import express from "express";
+import cors from "cors";
+import { Server } from "socket.io";
+import { v4 as uuid } from "uuid";
+
+import {
+  ClientToServer,
+  ServerToClient,
+} from "./sockets/types";
+
+import {
+  rooms,
+  createRoom,
+  joinRoom,
+  publicRoomState
+} from "./game/state";
+
+import {
+  startGame,
+  nextTurn,
+  revealHint,
+  handleCorrectGuess,
+} from "./game/engine";
+
+import { sanitizeChat, isCheat } from "./util/guard";
 
 const PORT = Number(process.env.PORT || 4000);
-const ORIGIN = process.env.CLIENT_URL || '*';
+const ORIGIN = process.env.CLIENT_URL || "*";
 
 const app = express();
 app.use(cors({ origin: ORIGIN }));
-app.get('/health', (_req, res) => res.send('ok'));
+app.get("/health", (_req, res) => res.send("ok"));
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: ORIGIN } });
 
-// 1s tick: reveal hints and end turns
+
+// ---------------------------------------------------------
+// GLOBAL GAME LOOP — runs every 1 second
+// ---------------------------------------------------------
 setInterval(() => {
   for (const room of rooms.values()) {
-    if (room.status !== 'in-progress' || !room.turnEndsAt) continue;
+    if (room.status !== "in-progress") continue;
+    if (!room.turnEndsAt) continue;
 
-    // hint progression
+    // Reveal hint periodically
     revealHint(room);
     io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
 
-    // end-of-turn
+    // If turn timer expired, move to next turn
     if (Date.now() >= room.turnEndsAt) {
       io.to(room.id).emit(ServerToClient.TURN_ENDED, {});
       nextTurn(room);
-      if (room.status === 'finished') {
+
+      if (room.status === "finished") {
         io.to(room.id).emit(ServerToClient.GAME_ENDED, publicRoomState(room));
       } else {
+        // notify everyone of a new turn
         io.to(room.id).emit(ServerToClient.TURN_STARTED, {
           drawingPlayerId: room.drawingPlayerId,
           revealedHint: room.revealedHint,
           endsAt: room.turnEndsAt,
           round: room.round,
         });
+
+        // send real word ONLY to drawer
+        if (room.drawingPlayerId && room.currentWord) {
+          io.to(room.drawingPlayerId).emit("drawer_word", { word: room.currentWord });
+        }
       }
+
+      // broadcast updated public state
+      io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
     }
   }
 }, 1000);
 
-io.on('connection', (socket) => {
-  // --- room lifecycle ---
-  socket.on(ClientToServer.CREATE_ROOM, ({ name }: { name: string }, cb) => {
+
+// ---------------------------------------------------------
+// SOCKET CONNECTION HANDLERS
+// ---------------------------------------------------------
+io.on("connection", (socket) => {
+  console.log("user connected", socket.id);
+
+  // CREATE ROOM
+  socket.on(ClientToServer.CREATE_ROOM, ({ name }, cb) => {
     const roomId = uuid().slice(0, 6);
-    const state = createRoom(roomId, socket.id, name || 'Player');
+    const state = createRoom(roomId, socket.id, name || "Player");
+
     socket.join(roomId);
     cb?.({ roomId, state: publicRoomState(state) });
+
     io.to(roomId).emit(ServerToClient.ROOM_STATE, publicRoomState(state));
   });
 
-  socket.on(ClientToServer.JOIN_ROOM, ({ roomId, name }: { roomId: string; name: string }, cb) => {
+  // JOIN ROOM
+  socket.on(ClientToServer.JOIN_ROOM, ({ roomId, name }, cb) => {
     const room = rooms.get(roomId);
-    if (!room) return cb?.({ error: 'Room not found' });
-    if (room.players.length >= 8) return cb?.({ error: 'Room full' });
-    joinRoom(room, socket.id, name || 'Player');
+    if (!room) return cb?.({ error: "Room not found" });
+    if (room.players.length >= 8) return cb?.({ error: "Room full" });
+
+    joinRoom(room, socket.id, name || "Player");
     socket.join(roomId);
+
     const pub = publicRoomState(room);
     io.to(roomId).emit(ServerToClient.ROOM_STATE, pub);
     cb?.({ state: pub });
   });
 
-  socket.on(ClientToServer.LEAVE_ROOM, ({ roomId }: { roomId: string }) => {
+  // LEAVE ROOM
+  socket.on(ClientToServer.LEAVE_ROOM, ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room) return;
-    leaveRoom(room, socket.id);
+
+    room.players = room.players.filter((p) => p.id !== socket.id);
     socket.leave(roomId);
+
     if (room.players.length === 0) {
       rooms.delete(room.id);
     } else {
-      if (room.hostId === socket.id) room.hostId = room.players[0].id;
       io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
     }
   });
 
-  // --- game controls ---
-  socket.on(ClientToServer.START_GAME, ({ roomId }: { roomId: string }) => {
+  // START GAME
+  socket.on(ClientToServer.START_GAME, ({ roomId }) => {
     const room = rooms.get(roomId);
     if (!room) return;
-    if (socket.id !== room.hostId) return; // host-only
+    if (socket.id !== room.hostId) return; // host only
+
+    // initialize game and first turn
     startGame(room);
     nextTurn(room);
-    io.to(roomId).emit(ServerToClient.TURN_STARTED, {
+
+    // Notify everyone turn started
+    io.to(room.id).emit(ServerToClient.TURN_STARTED, {
       drawingPlayerId: room.drawingPlayerId,
       revealedHint: room.revealedHint,
       endsAt: room.turnEndsAt,
       round: room.round,
     });
-    io.to(roomId).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+
+    // send drawer the real word
+    if (room.drawingPlayerId && room.currentWord) {
+      console.log("START_GAME: sending drawer_word to:", room.drawingPlayerId, room.currentWord);
+      io.to(room.drawingPlayerId).emit("drawer_word", { word: room.currentWord });
+    }
+
+    io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
   });
 
-  // --- drawing: only current drawer may broadcast ---
-  socket.on(ClientToServer.DRAW, ({ roomId, events }: { roomId: string; events: DrawEvent[] }) => {
+  // DRAW
+  socket.on(ClientToServer.DRAW, ({ roomId, events }) => {
     const room = rooms.get(roomId);
     if (!room) return;
-    if (room.drawingPlayerId !== socket.id) return; // guard
+    if (socket.id !== room.drawingPlayerId) return;
+
     socket.to(roomId).emit(ServerToClient.DRAW_UPDATE, events);
   });
 
-  // --- chat & guessing ---
-  socket.on(ClientToServer.CHAT, ({ roomId, text }: { roomId: string; text: string }, cb) => {
+  // CHAT
+  socket.on(ClientToServer.CHAT, ({ roomId, text }, cb) => {
     const room = rooms.get(roomId);
-    if (!room) return cb?.({ error: 'Room not found' });
+    if (!room) return cb?.({ error: "Room not found" });
+
     const clean = sanitizeChat(text);
 
-    // block exact word reveal to prevent cheating
-    if (isCheat(clean, room.currentWord)) return cb?.({ blocked: true });
+    if (isCheat(clean, room.currentWord)) {
+      return cb?.({ blocked: true });
+    }
 
     // correct guess?
     if (room.currentWord && clean.toLowerCase() === room.currentWord.toLowerCase()) {
       const { gained } = handleCorrectGuess(room, socket.id);
+
       io.to(roomId).emit(ServerToClient.CHAT_MSG, {
-        id: uuid(), playerId: socket.id, text: 'guessed the word!', correct: true, system: true, timestamp: Date.now()
+        id: uuid(),
+        playerId: socket.id,
+        text: "guessed the word!",
+        correct: true,
+        system: true,
+        timestamp: Date.now(),
       });
+
       io.to(roomId).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
       return cb?.({ correct: true, gained });
     }
 
-    // normal chat
+    // normal chat broadcast
     io.to(roomId).emit(ServerToClient.CHAT_MSG, {
-      id: uuid(), playerId: socket.id, text: clean, timestamp: Date.now()
+      id: uuid(),
+      playerId: socket.id,
+      text: clean,
+      timestamp: Date.now(),
     });
+
     cb?.({ ok: true });
   });
 
-  socket.on(ClientToServer.REQUEST_STATE, ({ roomId }: { roomId: string }, cb) => {
-    const room = rooms.get(roomId);
-    if (!room) return cb?.({ error: 'Room not found' });
-    cb?.({ state: publicRoomState(room) });
-  });
-
-  socket.on('disconnect', () => {
+  // DISCONNECT
+  socket.on("disconnect", () => {
     for (const room of rooms.values()) {
-      const wasIn = room.players.some(p => p.id === socket.id);
+      const wasIn = room.players.some((p) => p.id === socket.id);
       if (!wasIn) continue;
-      leaveRoom(room, socket.id);
+
+      room.players = room.players.filter((p) => p.id !== socket.id);
+
       if (room.players.length === 0) {
         rooms.delete(room.id);
       } else {
-        if (room.hostId === socket.id) room.hostId = room.players[0].id;
         io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
       }
     }
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server on :${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on :${PORT}`));
