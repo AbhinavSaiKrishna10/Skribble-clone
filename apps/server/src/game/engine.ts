@@ -57,28 +57,31 @@ export function nextTurn(room: any) {
   room.turnEndsAt = Date.now() + 60_000;
 }
 
-export function revealHint(room: any) {
-  if (!room.currentWord || !room.revealedHint) return;
 
-  const letters = room.currentWord.split("");
-  const hintArr = room.revealedHint.split(" ");
-
-  // reveal random unrevealed letters slowly (probability)
-  for (let i = 0; i < letters.length; i++) {
-    if (hintArr[i] === "_" && Math.random() < 0.08) {
-      hintArr[i] = letters[i];
-    }
-  }
-
-  room.revealedHint = hintArr.join(" ");
-}
 
 export function handleCorrectGuess(room: any, playerId: string) {
   const player = room.players.find((p: Player) => p.id === playerId);
   if (!player || player.hasGuessed) return { gained: 0 };
 
   player.hasGuessed = true;
-  player.score = (player.score || 0) + 100;
 
-  return { gained: 100 };
+  // Calculate points based on time left (max 500, min 50)
+  const timeLeft = Math.max(0, (room.turnEndsAt || 0) - Date.now());
+  const gained = Math.max(50, Math.floor((timeLeft / 60000) * 500));
+  player.score = (player.score || 0) + gained;
+
+  // Award drawer 50 points per correct guess
+  const drawer = room.players.find((p: Player) => p.id === room.drawingPlayerId);
+  if (drawer) {
+    drawer.score = (drawer.score || 0) + 50;
+  }
+
+  return { gained };
+}
+
+export function checkAllGuessed(room: any): boolean {
+  if (!room.players || room.players.length < 2) return false;
+  // All players except the drawer should have guessed correctly
+  const nonDrawers = room.players.filter((p: Player) => p.id !== room.drawingPlayerId);
+  return nonDrawers.every((p: Player) => p.hasGuessed);
 }

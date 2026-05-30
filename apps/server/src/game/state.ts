@@ -12,12 +12,14 @@ export function createRoom(id: string, hostId: string, hostName: string): RoomSt
     players: [{ id: hostId, name: hostName || 'Player', score: 0, hasGuessed: false }],
     hostId,
     status: 'lobby',
+    mode: 'skribble',
     round: 0,
     maxRounds: 3,
     turn: -1,
     drawingPlayerId: undefined,
     revealedHint: '',
     turnEndsAt: undefined,
+    intermissionEndsAt: undefined,
   };
   rooms.set(id, state);
   return state;

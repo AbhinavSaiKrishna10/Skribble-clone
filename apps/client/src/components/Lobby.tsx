@@ -130,8 +130,8 @@ export default function Lobby() {
             </div>
 
             <div className="mt-6 h-40 flex items-center justify-center">
-              <div className="w-64 h-28 rounded-md border border-dashed border-gray-300 flex items-center justify-center text-gray-500">
-                Demo preview (coming soon)
+              <div className="w-64 h-auto max-h-40 rounded-xl overflow-hidden shadow-sm border border-gray-200">
+                <img src="/doodle_preview.png" alt="Doodle preview" className="w-full h-full object-cover hover:scale-105 transition-transform duration-300" />
               </div>
             </div>
 

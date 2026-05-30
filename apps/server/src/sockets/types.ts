@@ -13,12 +13,14 @@ export interface PublicRoomState {
   players: Player[];
   hostId: PlayerID;
   status: 'lobby' | 'in-progress' | 'intermission' | 'finished';
+  mode: 'skribble' | 'free-canvas';
   round: number;      // used later
   maxRounds: number;  // used later
   turn: number;       // used later
   drawingPlayerId?: PlayerID; // used later
   revealedHint?: string;      // used later
   turnEndsAt?: number;        // used later
+  intermissionEndsAt?: number;
 }
 
 export type DrawEvent =
@@ -36,6 +38,7 @@ export const ClientToServer = {
   DRAW: 'draw',
   CHAT: 'chat',
   REQUEST_STATE: 'request_state',
+  END_GAME: 'end_game',
 } as const;
 
 export const ServerToClient = {

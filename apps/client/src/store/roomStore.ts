@@ -12,6 +12,7 @@ interface RoomState {
   players: Player[];
   hostId?: string;
   status: Status;
+  mode?: 'skribble' | 'free-canvas';
   round?: number;
   maxRounds?: number;
   turn?: number;

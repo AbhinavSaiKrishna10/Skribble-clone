@@ -19,8 +19,8 @@ import {
 import {
   startGame,
   nextTurn,
-  revealHint,
   handleCorrectGuess,
+  checkAllGuessed,
 } from "./game/engine";
 
 import { sanitizeChat, isCheat } from "./util/guard";
@@ -39,39 +39,53 @@ const io = new Server(server, { cors: { origin: ORIGIN } });
 // ---------------------------------------------------------
 // GLOBAL GAME LOOP — runs every 1 second
 // ---------------------------------------------------------
+function triggerIntermission(room: any) {
+  room.status = "intermission";
+  room.intermissionEndsAt = Date.now() + 5000;
+  room.revealedHint = room.currentWord; // fully reveal word
+  
+  io.to(room.id).emit(ServerToClient.TURN_ENDED, {});
+  io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+}
+
 setInterval(() => {
   for (const room of rooms.values()) {
-    if (room.status !== "in-progress") continue;
-    if (!room.turnEndsAt) continue;
+    if (room.mode !== "skribble") continue;
 
-    // Reveal hint periodically
-    revealHint(room);
-    io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+    if (room.status === "in-progress") {
+      if (!room.turnEndsAt) continue;
 
-    // If turn timer expired, move to next turn
-    if (Date.now() >= room.turnEndsAt) {
-      io.to(room.id).emit(ServerToClient.TURN_ENDED, {});
-      nextTurn(room);
-
-      if (room.status === "finished") {
-        io.to(room.id).emit(ServerToClient.GAME_ENDED, publicRoomState(room));
-      } else {
-        // notify everyone of a new turn
-        io.to(room.id).emit(ServerToClient.TURN_STARTED, {
-          drawingPlayerId: room.drawingPlayerId,
-          revealedHint: room.revealedHint,
-          endsAt: room.turnEndsAt,
-          round: room.round,
-        });
-
-        // send real word ONLY to drawer
-        if (room.drawingPlayerId && room.currentWord) {
-          io.to(room.drawingPlayerId).emit("drawer_word", { word: room.currentWord });
-        }
+      // If turn timer expired, move to intermission
+      if (Date.now() >= room.turnEndsAt) {
+        triggerIntermission(room);
       }
+    } else if (room.status === "intermission") {
+      if (!room.intermissionEndsAt) continue;
 
-      // broadcast updated public state
-      io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+      if (Date.now() >= room.intermissionEndsAt) {
+        nextTurn(room);
+
+        if (room.status === "finished") {
+          io.to(room.id).emit(ServerToClient.GAME_ENDED, publicRoomState(room));
+        } else {
+          room.status = "in-progress";
+          // notify everyone of a new turn
+          io.to(room.id).emit(ServerToClient.TURN_STARTED, {
+            drawingPlayerId: room.drawingPlayerId,
+            revealedHint: room.revealedHint,
+            endsAt: room.turnEndsAt,
+            round: room.round,
+          });
+
+          // send real word ONLY to drawer
+          if (room.drawingPlayerId && room.currentWord) {
+            io.to(room.drawingPlayerId).emit("drawer_word", { word: room.currentWord });
+          }
+        }
+
+        // broadcast updated public state
+        io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+      }
     }
   }
 }, 1000);
@@ -124,29 +138,45 @@ io.on("connection", (socket) => {
   });
 
   // START GAME
-  socket.on(ClientToServer.START_GAME, ({ roomId }) => {
+  socket.on(ClientToServer.START_GAME, ({ roomId, mode }) => {
     const room = rooms.get(roomId);
     if (!room) return;
     if (socket.id !== room.hostId) return; // host only
 
-    // initialize game and first turn
-    startGame(room);
-    nextTurn(room);
+    room.mode = mode || 'skribble';
+    room.status = "in-progress";
 
-    // Notify everyone turn started
-    io.to(room.id).emit(ServerToClient.TURN_STARTED, {
-      drawingPlayerId: room.drawingPlayerId,
-      revealedHint: room.revealedHint,
-      endsAt: room.turnEndsAt,
-      round: room.round,
-    });
+    if (room.mode === 'skribble') {
+      // initialize game and first turn
+      startGame(room);
+      nextTurn(room);
 
-    // send drawer the real word
-    if (room.drawingPlayerId && room.currentWord) {
-      console.log("START_GAME: sending drawer_word to:", room.drawingPlayerId, room.currentWord);
-      io.to(room.drawingPlayerId).emit("drawer_word", { word: room.currentWord });
+      // Notify everyone turn started
+      io.to(room.id).emit(ServerToClient.TURN_STARTED, {
+        drawingPlayerId: room.drawingPlayerId,
+        revealedHint: room.revealedHint,
+        endsAt: room.turnEndsAt,
+        round: room.round,
+      });
+
+      // send drawer the real word
+      if (room.drawingPlayerId && room.currentWord) {
+        console.log("START_GAME: sending drawer_word to:", room.drawingPlayerId, room.currentWord);
+        io.to(room.drawingPlayerId).emit("drawer_word", { word: room.currentWord });
+      }
     }
 
+    io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+  });
+
+  // END GAME
+  socket.on(ClientToServer.END_GAME, ({ roomId }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    if (socket.id !== room.hostId) return;
+
+    room.status = "finished";
+    io.to(room.id).emit(ServerToClient.GAME_ENDED, publicRoomState(room));
     io.to(room.id).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
   });
 
@@ -154,7 +184,7 @@ io.on("connection", (socket) => {
   socket.on(ClientToServer.DRAW, ({ roomId, events }) => {
     const room = rooms.get(roomId);
     if (!room) return;
-    if (socket.id !== room.drawingPlayerId) return;
+    if (room.mode === 'skribble' && socket.id !== room.drawingPlayerId) return;
 
     socket.to(roomId).emit(ServerToClient.DRAW_UPDATE, events);
   });
@@ -166,7 +196,10 @@ io.on("connection", (socket) => {
 
     const clean = sanitizeChat(text);
 
-    if (isCheat(clean, room.currentWord)) {
+    const player = room.players.find(p => p.id === socket.id);
+    const playerName = player?.name || "Player";
+
+    if (socket.id === room.drawingPlayerId && isCheat(clean, room.currentWord)) {
       return cb?.({ blocked: true });
     }
 
@@ -177,6 +210,7 @@ io.on("connection", (socket) => {
       io.to(roomId).emit(ServerToClient.CHAT_MSG, {
         id: uuid(),
         playerId: socket.id,
+        name: playerName,
         text: "guessed the word!",
         correct: true,
         system: true,
@@ -184,6 +218,12 @@ io.on("connection", (socket) => {
       });
 
       io.to(roomId).emit(ServerToClient.ROOM_STATE, publicRoomState(room));
+
+      // early end turn if everyone guessed
+      if (checkAllGuessed(room)) {
+        triggerIntermission(room);
+      }
+
       return cb?.({ correct: true, gained });
     }
 
@@ -191,6 +231,7 @@ io.on("connection", (socket) => {
     io.to(roomId).emit(ServerToClient.CHAT_MSG, {
       id: uuid(),
       playerId: socket.id,
+      name: playerName,
       text: clean,
       timestamp: Date.now(),
     });

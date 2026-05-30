@@ -9,8 +9,8 @@ export default function DrawingCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
-  const { roomId, me, drawingPlayerId } = useRoomStore();
-  const isDrawingPlayer = me.id === drawingPlayerId;
+  const { roomId, me, drawingPlayerId, mode } = useRoomStore();
+  const isDrawingPlayer = mode === 'free-canvas' || me.id === drawingPlayerId;
 
   const [color, setColor] = useState("#000000");
   const [thickness, setThickness] = useState(4);

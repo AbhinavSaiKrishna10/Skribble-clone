@@ -10,6 +10,7 @@ export default function RoomScreen() {
     hostId,
     me,
     status,
+    mode,
     set,
     messages,
     revealedHint,
@@ -18,6 +19,7 @@ export default function RoomScreen() {
   } = useRoomStore();
 
   const [chatInput, setChatInput] = useState("");
+  const [selectedMode, setSelectedMode] = useState<'skribble'|'free-canvas'>('skribble');
   const [wordChoices, setWordChoices] = useState<string[] | null>(null);
   const [wordPicked, setWordPicked] = useState<string | null>(null);
 
@@ -91,7 +93,12 @@ export default function RoomScreen() {
   // ---------------------------------------------------
   const startGame = () => {
     if (!roomId) return;
-    socket.emit("start_game", { roomId });
+    socket.emit("start_game", { roomId, mode: selectedMode });
+  };
+
+  const endGame = () => {
+    if (!roomId) return;
+    socket.emit("end_game", { roomId });
   };
 
   const leaveRoom = () => {
@@ -143,16 +150,24 @@ export default function RoomScreen() {
         </div>
 
         <div className="flex gap-3 mt-4 md:mt-0">
+          {isHost && mode === 'free-canvas' && status === 'in-progress' && (
+            <button
+              onClick={endGame}
+              className="px-4 py-2 rounded-lg bg-yellow-500 text-white shadow text-sm hover:bg-yellow-600"
+            >
+              End Game
+            </button>
+          )}
           <button
             onClick={() => navigator.clipboard.writeText(roomId!)}
-            className="px-4 py-2 rounded-lg border bg-white shadow text-sm hover:bg-slate-50"
+            className="px-4 py-2 rounded-lg border bg-white text-slate-700 shadow text-sm hover:bg-slate-50"
           >
             Copy Room ID
           </button>
 
           <button
             onClick={leaveRoom}
-            className="px-4 py-2 rounded-lg bg-red-500 text-white shadow text-sm hover:bg-red-600"
+            className="px-4 py-2 rounded-lg bg-black text-white shadow text-sm hover:bg-slate-800"
           >
             Leave Room
           </button>
@@ -160,27 +175,26 @@ export default function RoomScreen() {
       </div>
 
       {/* If game is in progress -> show canvas + hint + chat */}
-      {status === "in-progress" ? (
+      {status === "in-progress" && (
         <div className="w-full max-w-6xl grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Canvas area (spans 2 cols) */}
           <div className="lg:col-span-2 space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold text-slate-800">
-                  {isDrawer ? "You are drawing" : "Guess the word"}
+                  {mode === 'free-canvas' ? "Free Canvas Mode" : (isDrawer ? "You are drawing" : "Guess the word")}
                 </h2>
-                <div className="text-sm text-slate-600">
-                  Round hint: <span className="font-medium">{revealedHint || "?"}</span>
-                </div>
               </div>
 
-              <div className="text-sm text-slate-600">
-                {turnEndsAt ? (
-                  <span>Ends at: {new Date(turnEndsAt).toLocaleTimeString()}</span>
-                ) : (
-                  <span>Timer: —</span>
-                )}
-              </div>
+              {mode === 'skribble' && (
+                <div className="text-sm text-slate-600">
+                  {turnEndsAt ? (
+                    <span>Ends at: {new Date(turnEndsAt).toLocaleTimeString()}</span>
+                  ) : (
+                    <span>Timer: —</span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Drawer-only word display */}
@@ -235,14 +249,14 @@ export default function RoomScreen() {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   onKeyDown={onChatKey}
-                  placeholder={isDrawer ? "You cannot guess while drawing" : "Type a guess or chat"}
-                  disabled={isDrawer}
+                  placeholder={mode === 'free-canvas' ? "Chat with everyone" : (isDrawer ? "You cannot guess while drawing" : "Type a guess or chat")}
+                  disabled={mode === 'skribble' && isDrawer}
                   className="w-full px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-cyan-400"
                 />
                 <div className="flex gap-2 mt-2">
                   <button
                     onClick={sendChat}
-                    disabled={!chatInput.trim() || isDrawer}
+                    disabled={!chatInput.trim() || (mode === 'skribble' && isDrawer)}
                     className="flex-1 px-3 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
                   >
                     Send
@@ -251,7 +265,7 @@ export default function RoomScreen() {
                     onClick={() => {
                       useRoomStore.getState().set({ messages: [] });
                     }}
-                    className="px-3 py-2 rounded-lg border"
+                    className="px-3 py-2 rounded-lg border bg-white text-slate-700 hover:bg-slate-50"
                   >
                     Clear
                   </button>
@@ -260,8 +274,61 @@ export default function RoomScreen() {
             </div>
           </aside>
         </div>
-      ) : (
-        // Lobby UI (status !== in-progress)
+      )}
+
+      {status === "intermission" && (
+        <div className="w-full max-w-4xl bg-white rounded-2xl shadow p-8 border text-center">
+          <h2 className="text-3xl font-bold text-slate-900 mb-4">Turn Ended!</h2>
+          <p className="text-xl text-slate-700 mb-8">
+            The word was: <span className="font-bold text-indigo-600 tracking-widest">{revealedHint}</span>
+          </p>
+          
+          <h3 className="text-xl font-semibold mb-4">Scores</h3>
+          <div className="max-w-md mx-auto space-y-2">
+            {[...players].sort((a, b) => b.score - a.score).map((p, i) => (
+              <div key={p.id} className="flex justify-between items-center p-3 rounded bg-slate-50 border">
+                <span><span className="font-bold mr-2 text-slate-400">#{i+1}</span> {p.name} {p.id === hostId && "⭐"}</span>
+                <span className="font-semibold text-indigo-600">{p.score} pts</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-8 text-sm text-slate-500 animate-pulse">Next turn starting soon...</p>
+        </div>
+      )}
+
+      {status === "finished" && (
+        <div className="w-full max-w-4xl bg-white rounded-2xl shadow p-8 border text-center">
+          <h2 className="text-4xl font-bold text-emerald-600 mb-4">Game Over!</h2>
+          <h3 className="text-2xl font-semibold mb-8">
+            {mode === 'free-canvas' ? 'Collaborators' : 'Final Scores'}
+          </h3>
+          <div className="max-w-md mx-auto space-y-3">
+            {[...players].sort((a, b) => b.score - a.score).map((p, i) => (
+              <div key={p.id} className={`flex justify-between items-center p-4 rounded-lg border ${mode === 'skribble' && i === 0 ? 'bg-yellow-50 border-yellow-200' : 'bg-slate-50'}`}>
+                <span className="text-lg">
+                  <span className="font-bold mr-2">
+                    {mode === 'skribble' ? (i === 0 ? '🏆' : `#${i+1}`) : '🎨'}
+                  </span> 
+                  {p.name} {p.id === hostId && "⭐"}
+                </span>
+                {mode === 'skribble' && (
+                  <span className="font-bold text-lg text-slate-700">{p.score} pts</span>
+                )}
+              </div>
+            ))}
+          </div>
+          {isHost && (
+            <button
+              onClick={startGame}
+              className="mt-8 px-8 py-3 rounded-lg text-white font-semibold shadow bg-emerald-500 hover:bg-emerald-600"
+            >
+              Play Again
+            </button>
+          )}
+        </div>
+      )}
+
+      {status === "lobby" && (
         <div className="w-full max-w-4xl bg-white rounded-2xl shadow p-8 border">
           <h2 className="text-xl font-semibold text-slate-900 mb-6">Players in this room</h2>
 
@@ -281,14 +348,24 @@ export default function RoomScreen() {
           </div>
 
           {isHost && (
-            <button
-              onClick={startGame}
-              disabled={players.length < 2}
-              className="w-full py-3 rounded-lg text-white font-semibold shadow disabled:opacity-50"
-              style={{ background: "linear-gradient(90deg,#06b6d4,#0ea5e9)" }}
-            >
-              {players.length < 2 ? "Need at least 2 players" : "Start Game"}
-            </button>
+            <div className="flex flex-col gap-3">
+              <select 
+                value={selectedMode} 
+                onChange={e => setSelectedMode(e.target.value as any)}
+                className="w-full py-3 px-4 rounded-lg border border-gray-300 focus:ring-2 focus:ring-cyan-500 bg-white"
+              >
+                <option value="skribble">Skribble Mode (Draw & Guess)</option>
+                <option value="free-canvas">Free Canvas Mode (Collaborative)</option>
+              </select>
+              <button
+                onClick={startGame}
+                disabled={players.length < 2 && selectedMode === 'skribble'}
+                className="w-full py-3 rounded-lg text-white font-semibold shadow disabled:opacity-50"
+                style={{ background: "linear-gradient(90deg,#06b6d4,#0ea5e9)" }}
+              >
+                {(players.length < 2 && selectedMode === 'skribble') ? "Need at least 2 players" : "Start Game"}
+              </button>
+            </div>
           )}
 
           {!isHost && (
